@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CrossWindowCom 测试页面</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            width: calc(100% - 40px);
+            margin: 0 auto;
+            padding: 0 20px;
+            line-height: 1.6;
+        }
+
+        .container {
+            display: flex;
+            gap: 20px;
+        }
+
+        .panel {
+            flex: 1;
+            border: 1px solid #ddd;
+            padding: 15px;
+            border-radius: 5px;
+            background-color: #f9f9f9;
+        }
+
+        .log-container {
+            margin-top: 20px;
+            border: 1px solid #ddd;
+            padding: 10px;
+            height: 300px;
+            overflow-y: auto;
+            background-color: #fff;
+        }
+
+        button {
+            padding: 8px 12px;
+            margin: 5px 0;
+            background-color: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background-color: #45a049;
+        }
+
+        .test-case {
+            margin-bottom: 15px;
+            padding: 10px;
+            border-bottom: 1px solid #eee;
+        }
+
+        h2 {
+            color: #333;
+            border-bottom: 2px solid #4CAF50;
+            padding-bottom: 5px;
+        }
+
+        .success {
+            color: green;
+        }
+
+        .error {
+            color: red;
+        }
+
+        iframe {
+            width: 100%;
+            height: 200px;
+            border: 1px solid #ddd;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+    <h1>CrossWindowCom 测试页面</h1>
+
+    <div class="container">
+        <!-- 主窗口测试面板 -->
+        <div class="panel">
+            <h2>主窗口测试</h2>
+            <p>当前 origin: <span id="main-origin"></span></p>
+
+            <div class="test-case">
+                <h3>请求/响应测试</h3>
+                <button id="test-request">发送请求</button>
+            </div>
+
+            <div class="test-case">
+                <h3>3事件系统测试</h3>
+                <button id="test-emit">发送事件</button>
+            </div>
+        </div>
+
+        <!-- 日志面板 -->
+        <div class="panel">
+
+            <div class="test-case">
+                <h3>同域测试</h3>
+                <iframe id="test-iframe" src="about:blank" style="height: 550px;"></iframe>
+            </div>
+        </div>
+        <!-- 日志面板 -->
+        <div class="panel">
+            <h2>主窗口测试日志</h2>
+            <div class="log-container" id="log"></div>
+        </div>
+    </div>
+
+    <script src="../CrossWindowCom.js"></script>
+    <script>
+        // 显示当前窗口的origin
+        document.getElementById('main-origin').textContent = window.location.origin;
+
+        // 日志函数
+        function log(message, className = '') {
+            const logElement = document.getElementById('log');
+            const logEntry = document.createElement('div');
+            logEntry.className = className;
+            logEntry.innerHTML = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logElement.appendChild(logEntry);
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+        var pageId = 'main-window';
+        let messenger = new CrossWindowCom({
+            debug: true,
+            namespace: pageId,
+            targetOrigin: window.location.origin,
+            messageTimeout: 3000,
+            errorHandler: (error) => log(`错误: ${error}`, 'error')
+        });
+        log('Messenger 初始化完成', 'success');
+
+        // 注册iframe事件处理器
+        messenger.onRequest('iframe-request', (data) => {
+            let res = { status: 'success', data: '我是主窗口，你请求我后，我给你返回的数据' };
+            log(`收到来自iframe的请求: ${JSON.stringify(data)} 。将返回：${JSON.stringify(res)}`, 'success');
+            return res;
+        });
+        // 注册iframe事件处理器
+        messenger.onEvent('iframe-event', (data) => {
+            log(`收到来自iframe的事件: ${JSON.stringify(data)}`, 'success');
+        });
+
+        // 测试用例: 请求/响应
+        document.getElementById('test-request').addEventListener('click', async () => {
+            if (messenger) {
+                try {
+                    log('发送请求中...');
+                    const response = await messenger.request('main-widnow-request', { data: '测试请求数据' });
+                    log(`收到响应: ${JSON.stringify(response)}`, 'success');
+                } catch (error) {
+                    log(`请求失败: ${error}`, 'error');
+                }
+            } else {
+                log('请先初始化Messenger', 'error');
+            }
+        });
+        // 测试用例: 事件
+        document.getElementById('test-emit').addEventListener('click', () => {
+            if (messenger) {
+                messenger.emitEvent('main-window-event', { message: '这是一个测试事件', timestamp: Date.now() });
+                log('已发送测试事件', 'success');
+            } else {
+                log('请先初始化Messenger', 'error');
+            }
+        });
+        // 初始化测试iframe
+        const testIframe = document.getElementById('test-iframe');
+        testIframe.src = `iframe.html?pageId=${pageId}`;
+        testIframe.addEventListener('load', () => {
+            messenger.addTargetWindow(testIframe.contentWindow);
+            let testIframeOrigin = new URL(testIframe.src).origin;
+            log(`测试iframe加载完成，origin: ${testIframeOrigin}`);
+            // 向iframe发送消息iframe-request
+            messenger.emitEvent('main-window-event', { message: '来自主窗口的问候' });
+        });
+    </script>
+</body>
+
+</html>

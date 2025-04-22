@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+
+<head>
+    <meta charset="UTF-8">
+    <title>CrossWindowCom 测试 iframe</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            padding: 10px;
+            margin: 0;
+        }
+
+        #log {
+            height: 380px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 5px;
+            font-size: 12px;
+        }
+
+        .success {
+            color: green;
+        }
+
+        .error {
+            color: red;
+        }
+
+        button {
+            padding: 5px 10px;
+            margin: 2px 0;
+            font-size: 12px;
+        }
+    </style>
+</head>
+
+<body>
+    <h3>iframe 测试窗口</h3>
+    <p>当前 origin: <span id="iframe-origin"></span></p>
+
+    <div>
+        <button id="iframe-send">发送事件到主窗口</button>
+        <button id="iframe-request">发送请求到主窗口</button>
+    </div>
+
+    <div id="log"></div>
+
+    <script src="../CrossWindowCom.js"></script>
+    <script>
+        // 显示当前窗口的origin
+        document.getElementById('iframe-origin').textContent = window.location.origin;
+
+        // 日志函数
+        function log(message, className = '') {
+            const logElement = document.getElementById('log');
+            const logEntry = document.createElement('div');
+            logEntry.className = className;
+            logEntry.innerHTML = `[${new Date().toLocaleTimeString()}] ${message}`;
+            logElement.appendChild(logEntry);
+            logElement.scrollTop = logElement.scrollHeight;
+        }
+
+        // 获取url参数的方法
+        function getUrlParam(name) {
+            // 获取当前URL的查询字符串部分
+            const queryString = window.location.search;
+            // 使用URLSearchParams解析查询字符串
+            const urlParams = new URLSearchParams(queryString);
+            // 获取指定参数的值
+            if (name)
+                return urlParams.get(name);
+            else
+                return urlParams
+        }
+        // 初始化 Messenger
+        var pageId = getUrlParam('pageId');
+        let messenger = new CrossWindowCom({
+            debug: true,
+            namespace: pageId,
+            targetOrigin: window.parent.location.origin,
+            errorHandler: (error) => log(`错误: ${error}`)
+        });
+        // 添加父窗口为目标
+        messenger.addTargetWindow(window.parent);
+        // 接收主窗口的事件
+        messenger.onEvent('main-window-event', (data) => {
+            log(`收到来自主窗口的事件: ${JSON.stringify(data)}`);
+        });
+        // 接收主窗口的请求
+        messenger.onRequest('main-widnow-request', (params) => {
+            let res = { status: 'from-iframe', data: "我是子窗口，你请求我后，我给你返回的数据" };
+            log(`收到请求: ${JSON.stringify(params)}, 将返回: ${JSON.stringify(res)}`);
+            return res;
+        });
+
+        // 发送事件到主窗口
+        document.getElementById('iframe-send').addEventListener('click', () => {
+            if (messenger) {
+                messenger.emitEvent('iframe-event', {
+                    message: '来自iframe的问候',
+                    timestamp: Date.now()
+                });
+                log('已发送事件到主窗口', 'success');
+            } else {
+                log('请先初始化Messenger', 'error');
+            }
+        });
+
+        // 发送请求到主窗口
+        document.getElementById('iframe-request').addEventListener('click', async () => {
+            if (messenger) {
+                try {
+                    const response = await messenger.request('iframe-request', {
+                        data: '来自iframe的请求'
+                    });
+                    log(`收到主窗口响应: ${JSON.stringify(response)}`, 'success');
+                } catch (error) {
+                    log(`请求失败: ${error}`, 'error');
+                }
+            } else {
+                log('请先初始化Messenger', 'error');
+            }
+        });
+    </script>
+</body>
+
+</html>

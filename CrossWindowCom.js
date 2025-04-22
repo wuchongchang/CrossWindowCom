@@ -16,6 +16,7 @@ class CrossWindowCom {
     this.settings = {
       targetOrigin: window.location.origin,
       verifyOrigin: true,
+      messageType: 'kingdee',
       namespace: 'default',
       debug: false,
       messageTimeout: 5000,
@@ -23,9 +24,29 @@ class CrossWindowCom {
       ...options
     };
 
-    // 处理器存储
+
+    // 消息体转换器
+    this.messageConverter = function (message, type) {
+      if (this.settings.messageType === 'kingdee') {
+        if (type === 'response') {
+          var msg = message.content;
+          msg.namespace = message.pageId || 'default';
+          return msg;
+        }
+        // 金蝶平台消息体转换
+        var msg = {
+          pageId: message.namespace || 'default',
+          type: 'invokeCustomEvent',
+          content: message
+        }
+        return msg;
+      }
+      // 默认不处理直接返回
+      return message;
+    }
+    // 处理器存储    
     this.eventHandlers = {};      // 事件处理器 {eventName: [handler1, handler2]}
-    this.requestHandlers = {};    // 请求处理器 {requestName: handler}
+    this.requestHandlers = {};    // 请求处理器 {eventName: handler}
     this.messageHandlers = {};    // 临时请求响应处理器 {messageId: handler}
     this.targetWindows = new Set(); // 目标窗口集合
     this.pendingMessages = new Map(); // 待处理消息队列 {messageId: messageData}
@@ -52,7 +73,8 @@ class CrossWindowCom {
           return;
         }
 
-        const { data } = event;
+        const data = this.messageConverter(event.data, 'response');
+
 
         // 检查消息是否属于本插件（通过namespace校验）
         if (!data || data.namespace !== this.settings.namespace) {
@@ -98,26 +120,27 @@ class CrossWindowCom {
    * @param {Object} message 解析后的消息对象
    */
   _handleRequest(event, message) {
-    const { requestName, messageId, params } = message;
-    
+    const { eventName, messageId, params } = message;
+
     // 查找对应的请求处理器
-    const handler = this.requestHandlers[requestName];
+    const handler = this.requestHandlers[eventName];
     if (handler) {
       try {
         const response = handler(params) ?? { status: 'unhandled' };
-        
-        // 发送响应
-        event.source.postMessage({
+        // 处理消息体的转换（主要是金蝶平台有自己的处理逻辑在）
+        let message = this.messageConverter({
           namespace: this.settings.namespace,
           type: 'response',
           messageId,
           params: response
-        }, event.origin);
+        })
+        // 发送响应
+        event.source.postMessage(message, event.origin);
       } catch (error) {
         this.settings.errorHandler(error);
-        
+
         // 即使出错也返回错误响应
-        event.source.postMessage({
+        let message = this.messageConverter({
           namespace: this.settings.namespace,
           type: 'response',
           messageId,
@@ -125,21 +148,24 @@ class CrossWindowCom {
             status: 'error',
             message: error.message
           }
-        }, event.origin);
+        })
+        // 发送响应
+        event.source.postMessage(message, event.origin);
       }
     } else {
       // 没有找到处理器
-      this._log(`No handler found for request: ${requestName}`);
-      
-      event.source.postMessage({
+      this._log(`No handler found for request: ${eventName}`);
+      let message = this.messageConverter({
         namespace: this.settings.namespace,
         type: 'response',
         messageId,
         params: {
           status: 'no_handler',
-          requestName
+          eventName
         }
-      }, event.origin);
+      })
+      // 发送响应
+      event.source.postMessage(message, event.origin);
     }
   }
 
@@ -149,10 +175,10 @@ class CrossWindowCom {
    */
   _handleResponse(message) {
     const { messageId, params } = message;
-    
+
     if (this.messageHandlers[messageId]) {
       const handler = this.messageHandlers[messageId];
-      
+
       // 执行处理器并清理
       handler(params);
       delete this.messageHandlers[messageId];
@@ -168,7 +194,7 @@ class CrossWindowCom {
    */
   _handleEvent(message) {
     const { eventName, params } = message;
-    
+
     if (this.eventHandlers[eventName]) {
       // 执行所有注册的处理器
       this.eventHandlers[eventName].forEach(handler => {
@@ -191,13 +217,14 @@ class CrossWindowCom {
   _handleHeartbeat(event, message) {
     const { counter } = message;
     this._log(`Received heartbeat #${counter} from ${event.origin}`);
-    
-    // 返回心跳响应
-    event.source.postMessage({
+
+    let msg = this.messageConverter({
       namespace: this.settings.namespace,
       type: 'heartbeat-response',
       counter
-    }, event.origin);
+    })
+    // 返回心跳响应
+    event.source.postMessage(msg, event.origin);
   }
 
   /**​
@@ -209,12 +236,12 @@ class CrossWindowCom {
     // 基本字段检查
     if (!message || typeof message !== 'object') return false;
     if (message.namespace !== this.settings.namespace) return false;
-    
+
     // 按类型验证
     switch (message.type) {
       case 'request':
-        return typeof message.requestName === 'string' && 
-               typeof message.messageId === 'string';
+        return typeof message.eventName === 'string' &&
+          typeof message.messageId === 'string';
       case 'response':
         return typeof message.messageId === 'string';
       case 'event':
@@ -234,20 +261,20 @@ class CrossWindowCom {
    */
   _sendToAll(type, params) {
     const messageId = params?.messageId ?? this._generateId();
-    const message = {
+    let message = this.messageConverter({
       namespace: this.settings.namespace,
       type,
       messageId,
       ...params
-    };
-    
+    })
+
     // 添加到待处理队列
     this.pendingMessages.set(messageId, {
       message,
       timestamp: Date.now(),
       retries: 0
     });
-    
+
     // 尝试发送到所有目标窗口
     let successCount = 0;
     this.targetWindows.forEach(target => {
@@ -258,12 +285,12 @@ class CrossWindowCom {
         this._log(`Failed to send message to target window:`, error);
       }
     });
-    
+
     // 如果全部发送失败，立即从队列中移除
     if (successCount === 0) {
       this.pendingMessages.delete(messageId);
     }
-    
+
     return messageId;
   }
 
@@ -328,11 +355,11 @@ class CrossWindowCom {
     if (typeof handler !== 'function') {
       throw new Error('Handler must be a function');
     }
-    
+
     if (!this.eventHandlers[eventName]) {
       this.eventHandlers[eventName] = [];
     }
-    
+
     this.eventHandlers[eventName].push(handler);
     this._log(`Registered handler for event "${eventName}"`);
     return this;
@@ -348,7 +375,7 @@ class CrossWindowCom {
     if (!this.eventHandlers[eventName]) {
       return this;
     }
-    
+
     if (handler) {
       const index = this.eventHandlers[eventName].indexOf(handler);
       if (index !== -1) {
@@ -359,51 +386,51 @@ class CrossWindowCom {
       delete this.eventHandlers[eventName];
       this._log(`Removed all handlers for event "${eventName}"`);
     }
-    
+
     return this;
   }
 
   /**​
    * 注册请求处理器
-   * @param {string} requestName 请求名称
+   * @param {string} eventName 请求名称
    * @param {Function} handler 处理函数(应返回响应数据)
    * @returns {CrossWindowCom} 返回自身以便链式调用
    */
-  onRequest(requestName, handler) {
+  onRequest(eventName, handler) {
     if (typeof handler !== 'function') {
       throw new Error('Handler must be a function');
     }
-    
-    this.requestHandlers[requestName] = handler;
-    this._log(`Registered handler for request "${requestName}"`);
+
+    this.requestHandlers[eventName] = handler;
+    this._log(`Registered handler for request "${eventName}"`);
     return this;
   }
 
   /**​
    * 注册一次性请求处理器
-   * @param {string} requestName 请求名称
+   * @param {string} eventName 请求名称
    * @param {Function} handler 处理函数(应返回响应数据)
    * @returns {CrossWindowCom} 返回自身以便链式调用
    */
-  onceRequest(requestName, handler) {
+  onceRequest(eventName, handler) {
     const onceHandler = (params) => {
       const result = handler(params);
-      this.offRequest(requestName);
+      this.offRequest(eventName);
       return result;
     };
-    
-    return this.onRequest(requestName, onceHandler);
+
+    return this.onRequest(eventName, onceHandler);
   }
 
   /**​
    * 取消请求处理器
-   * @param {string} requestName 请求名称
+   * @param {string} eventName 请求名称
    * @returns {CrossWindowCom} 返回自身以便链式调用
    */
-  offRequest(requestName) {
-    if (this.requestHandlers[requestName]) {
-      delete this.requestHandlers[requestName];
-      this._log(`Removed handler for request "${requestName}"`);
+  offRequest(eventName) {
+    if (this.requestHandlers[eventName]) {
+      delete this.requestHandlers[eventName];
+      this._log(`Removed handler for request "${eventName}"`);
     }
     return this;
   }
@@ -418,7 +445,7 @@ class CrossWindowCom {
     if (typeof eventName !== 'string') {
       throw new Error('Event name must be a string');
     }
-    
+
     return this._sendToAll('event', {
       eventName,
       params
@@ -427,28 +454,28 @@ class CrossWindowCom {
 
   /**​
    * 发送请求到所有目标窗口并等待响应
-   * @param {string} requestName 请求名称
+   * @param {string} eventName 请求名称
    * @param {*} [params] 请求参数
    * @returns {Promise} 返回Promise，解析为响应数据
    */
-  request(requestName, params = {}) {
-    if (typeof requestName !== 'string') {
+  request(eventName, params = {}) {
+    if (typeof eventName !== 'string') {
       return Promise.reject(new Error('Request name must be a string'));
     }
-    
+
     return new Promise((resolve, reject) => {
       const messageId = this._sendToAll('request', {
-        requestName,
+        eventName,
         params
       });
-      
+
       // 设置超时
       const timeoutId = setTimeout(() => {
         delete this.messageHandlers[messageId];
         this.pendingMessages.delete(messageId);
-        reject(new Error(`Request "${requestName}" timed out after ${this.settings.messageTimeout}ms`));
+        reject(new Error(`Request "${eventName}" timed out after ${this.settings.messageTimeout}ms`));
       }, this.settings.messageTimeout);
-      
+
       // 注册响应处理器
       this.messageHandlers[messageId] = (response) => {
         clearTimeout(timeoutId);
@@ -467,7 +494,7 @@ class CrossWindowCom {
       this._log('Heartbeat already running');
       return this;
     }
-    
+
     this.heartbeatInterval = setInterval(() => {
       this.heartbeatCounter++;
       this._sendToAll('heartbeat', {
@@ -475,7 +502,7 @@ class CrossWindowCom {
       });
       this._log(`Sent heartbeat #${this.heartbeatCounter}`);
     }, interval);
-    
+
     this._log(`Started heartbeat with ${interval}ms interval`);
     return this;
   }
@@ -499,20 +526,20 @@ class CrossWindowCom {
   destroy() {
     // 移除事件监听
     window.removeEventListener('message', this._messageListener);
-    
+
     // 清理所有定时器
     this.stopHeartbeat();
     Object.values(this.messageHandlers).forEach(handler => {
       if (handler.timeoutId) clearTimeout(handler.timeoutId);
     });
-    
+
     // 清空所有存储
     this.targetWindows.clear();
     this.eventHandlers = {};
     this.requestHandlers = {};
     this.messageHandlers = {};
     this.pendingMessages.clear();
-    
+
     this._log('Instance destroyed');
   }
 }
@@ -520,6 +547,10 @@ class CrossWindowCom {
 // 模块导出
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = CrossWindowCom;
+} else if (typeof layui !== 'undefined' && layui.define) {
+  layui.define(function (exports) {
+    exports('CrossWindowCom', CrossWindowCom);
+  });
 } else if (typeof define === 'function' && define.amd) {
   define([], () => CrossWindowCom);
 } else {
